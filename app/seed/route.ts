@@ -29,13 +29,38 @@ async function seedUsers() {
   return insertedUsers;
 }
 
+async function seedCustomers() {
+  await sql`CREATE EXTENSION IF NOT EXISTS "uuid-ossp"`;
+  
+  await sql`
+    CREATE TABLE IF NOT EXISTS customers (
+      id UUID DEFAULT uuid_generate_v4() PRIMARY KEY,
+      name VARCHAR(255) NOT NULL,
+      email VARCHAR(255) NOT NULL UNIQUE,
+      image_url VARCHAR(255) NOT NULL
+    );
+  `;
+
+  const insertedCustomers = await Promise.all(
+    customers.map(
+      (customer) => sql`
+        INSERT INTO customers (id, name, email, image_url)
+        VALUES (${customer.id}, ${customer.name}, ${customer.email}, ${customer.image_url})
+        ON CONFLICT (id) DO NOTHING;
+      `,
+    ),
+  );
+
+  return insertedCustomers;
+}
+
 async function seedInvoices() {
   await sql`CREATE EXTENSION IF NOT EXISTS "uuid-ossp"`;
-
+  
   await sql`
     CREATE TABLE IF NOT EXISTS invoices (
       id UUID DEFAULT uuid_generate_v4() PRIMARY KEY,
-      customer_id UUID NOT NULL,
+      customer_id UUID NOT NULL REFERENCES customers(id) ON DELETE CASCADE,
       amount INT NOT NULL,
       status VARCHAR(255) NOT NULL,
       date DATE NOT NULL
@@ -55,35 +80,12 @@ async function seedInvoices() {
   return insertedInvoices;
 }
 
-async function seedCustomers() {
-  await sql`CREATE EXTENSION IF NOT EXISTS "uuid-ossp"`;
-
-  await sql`
-    CREATE TABLE IF NOT EXISTS customers (
-      id UUID DEFAULT uuid_generate_v4() PRIMARY KEY,
-      name VARCHAR(255) NOT NULL,
-      email VARCHAR(255) NOT NULL,
-      image_url VARCHAR(255) NOT NULL
-    );
-  `;
-
-  const insertedCustomers = await Promise.all(
-    customers.map(
-      (customer) => sql`
-        INSERT INTO customers (id, name, email, image_url)
-        VALUES (${customer.id}, ${customer.name}, ${customer.email}, ${customer.image_url})
-        ON CONFLICT (id) DO NOTHING;
-      `,
-    ),
-  );
-
-  return insertedCustomers;
-}
-
 async function seedRevenue() {
+  // Fix: Changed VARCHAR(4) to VARCHAR(10) to accommodate full month names
   await sql`
+    DROP TABLE IF EXISTS revenue CASCADE;
     CREATE TABLE IF NOT EXISTS revenue (
-      month VARCHAR(4) NOT NULL UNIQUE,
+      month VARCHAR(10) NOT NULL PRIMARY KEY,
       revenue INT NOT NULL
     );
   `;
@@ -93,7 +95,8 @@ async function seedRevenue() {
       (rev) => sql`
         INSERT INTO revenue (month, revenue)
         VALUES (${rev.month}, ${rev.revenue})
-        ON CONFLICT (month) DO NOTHING;
+        ON CONFLICT (month) DO UPDATE SET 
+          revenue = EXCLUDED.revenue;
       `,
     ),
   );
@@ -103,15 +106,25 @@ async function seedRevenue() {
 
 export async function GET() {
   try {
-    const result = await sql.begin((sql) => [
-      seedUsers(),
-      seedCustomers(),
-      seedInvoices(),
-      seedRevenue(),
-    ]);
+    // Run seeds in correct order (customers first due to foreign key)
+    await seedUsers();
+    await seedCustomers();
+    await seedInvoices();
+    await seedRevenue();
 
-    return Response.json({ message: 'Database seeded successfully' });
+    return Response.json({ 
+      message: 'Database seeded successfully',
+      data: {
+        users: users.length,
+        customers: customers.length,
+        invoices: invoices.length,
+        revenue: revenue.length
+      }
+    });
   } catch (error) {
-    return Response.json({ error }, { status: 500 });
+    console.error('Seed error:', error);
+    return Response.json({ 
+      error: 'Failed to seed database', 
+    }, { status: 500 });
   }
 }
